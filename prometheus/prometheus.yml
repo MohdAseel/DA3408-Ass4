@@ -1,0 +1,50 @@
+global:
+  # 5 s scrapes match the dashboard's 5 s refresh rate.
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  external_labels:
+    project: da3408-a4
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # AI application: prometheus_client HTTP server inside the Streamlit container.
+  - job_name: caption-app
+    static_configs:
+      - targets: ["caption-app:8000"]
+        labels:
+          service: image-captioning
+          tier: application
+
+  # Host metrics (CPU / RAM / disk / network) from node_exporter.
+  # node_exporter runs with the host network namespace so it sees the real
+  # host interfaces; Prometheus reaches it through the Docker host gateway.
+  - job_name: node
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+        labels:
+          service: host
+          tier: infrastructure
+    relabel_configs:
+      # AI-generated (Claude Code, Opus 5.5). Prompt: "complete the required
+      # Assignment4.pdf" (Prometheus + node_exporter part of the assignment).
+      # Replaces the "host.docker.internal:9100" instance label with a
+      # readable host name so dashboard legends say "host" instead of a DNS name.
+      - source_labels: [__address__]
+        regex: "([^:]+):\\d+"
+        target_label: instance
+        replacement: host
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]

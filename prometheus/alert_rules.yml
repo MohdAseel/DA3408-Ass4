@@ -1,0 +1,101 @@
+groups:
+  - name: caption-app
+    rules:
+      # up is 1 when the last scrape of the target succeeded, 0 when it failed.
+      - alert: CaptionAppDown
+        expr: up{job="caption-app"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Captioning app /metrics is unreachable"
+          description: "Prometheus could not scrape {{ $labels.instance }} for 30 s."
+
+      # Gauge set to 1 by the app after the BLIP weights are loaded.
+      - alert: CaptionModelNotLoaded
+        expr: caption_model_loaded == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Captioning model is not loaded"
+          description: "The app is up but the model has not been ready for 2 minutes."
+
+      # p95 latency from the histogram: rate() of each cumulative bucket over 5 m,
+      # summed across modes, then the 95th percentile is interpolated in the bucket
+      # where the cumulative count crosses 95 % of the total.
+      - alert: HighInferenceLatencyP95
+        expr: histogram_quantile(0.95, sum by (le) (rate(caption_inference_seconds_bucket[5m]))) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 inference latency above 5 s"
+          description: 'p95 per-image inference latency is {{ $value | printf "%.2f" }} s.'
+
+      # Share of images that failed in the last 5 minutes:
+      # failed images / all images (success + error).
+      - alert: HighCaptionErrorRatio
+        expr: |
+          sum(rate(caption_images_processed_total{status="error"}[5m]))
+            / sum(rate(caption_images_processed_total[5m])) > 0.10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 10 % of images fail"
+          description: "{{ $value | humanizePercentage }} of images failed in the last 5 minutes."
+
+      # Images are waiting on the model lock for a long time = CPU is saturated.
+      - alert: CaptionQueueBacklog
+        expr: histogram_quantile(0.95, sum by (le) (rate(caption_queue_wait_seconds_bucket[5m]))) > 10
+        for: 1m
+        labels:
+          severity: info
+        annotations:
+          summary: "Requests wait more than 10 s for the model"
+          description: "Concurrent users are queueing behind each other on the CPU."
+
+  - name: host
+    rules:
+      - alert: NodeExporterDown
+        expr: up{job="node"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "node_exporter is unreachable"
+          description: "No host metrics for 30 s; system panels will be empty."
+
+      # CPU busy % = 100 - idle %. rate() of the idle counter gives idle seconds
+      # per second per core; avg across cores gives the idle fraction.
+      - alert: HostHighCpu
+        expr: 100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[1m]))) > 90
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host CPU above 90 % for 2 minutes"
+          description: 'CPU busy is {{ $value | printf "%.1f" }} %.'
+
+      # MemAvailable / MemTotal = fraction of RAM the kernel can still hand out.
+      - alert: HostLowMemory
+        expr: 100 * node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Less than 10 % RAM available"
+          description: 'Only {{ $value | printf "%.1f" }} % of RAM is available.'
+
+      # Free space on real filesystems (tmpfs/overlay excluded).
+      - alert: HostDiskAlmostFull
+        expr: |
+          100 * node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk {{ $labels.mountpoint }} has less than 10 % free"
+          description: '{{ $value | printf "%.1f" }} % free on {{ $labels.mountpoint }}.'

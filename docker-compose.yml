@@ -1,0 +1,92 @@
+name: da3408-a4
+
+services:
+  caption-app:
+    build: ./app
+    image: da3408-a4-caption-app
+    ports:
+      - "8501:8501"   # Streamlit UI
+      - "8000:8000"   # Prometheus /metrics
+    environment:
+      METRICS_PORT: "8000"
+      PROMETHEUS_DISABLE_CREATED_SERIES: "True"   # drop *_created series from /metrics
+      BULK_BATCH_SIZE: "4"
+      MAX_BULK_IMAGES: "200"
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    # Host network + host PID + read-only host root so the metrics describe
+    # the machine itself (CPU, RAM, disks, NICs), not the container.
+    network_mode: host
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=:9100
+      # AI-generated regex (Claude Code, Opus 5.5). Prompt: "complete the required
+      # Assignment4.pdf". Skips virtual/Docker-internal mounts so only real disks show.
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+)($|/)
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus-data:/prometheus
+    depends_on: [caption-app, alertmanager]
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    command: [--config.file=/etc/alertmanager/alertmanager.yml]
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    depends_on: [alert-logger]
+    restart: unless-stopped
+
+  alert-logger:
+    image: python:3.12-slim
+    command: [python, -u, /alert_logger.py]
+    volumes:
+      - ./alertmanager/alert_logger.py:/alert_logger.py:ro
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-enterprise:13.2.3
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 5s
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/caption-observability.json
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

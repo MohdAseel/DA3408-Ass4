@@ -1,0 +1,24 @@
+route:
+  receiver: alert-logger
+  group_by: [alertname, severity]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+  routes:
+    - matchers: [severity="critical"]
+      receiver: alert-logger
+      group_wait: 0s
+
+receivers:
+  # Webhook receiver that prints every notification (docker compose logs alert-logger).
+  # To get e-mail or Slack instead, add email_configs / slack_configs here.
+  - name: alert-logger
+    webhook_configs:
+      - url: http://alert-logger:5001/alert
+        send_resolved: true
+
+inhibit_rules:
+  # If the app is down, its model/latency/error alerts are noise.
+  - source_matchers: [alertname="CaptionAppDown"]
+    target_matchers:
+      - alertname=~"CaptionModelNotLoaded|HighInferenceLatencyP95|HighCaptionErrorRatio|CaptionQueueBacklog"
